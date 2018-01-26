@@ -1,0 +1,119 @@
+package cmd
+
+import (
+	"fmt"
+	"time"
+
+
+	"github.com/HinanawiTenshi/Agenda/entity"
+	"github.com/spf13/cobra"
+)
+
+func init() {
+	RootCmd.AddCommand(createmeetingCmd)
+
+	// Initialize the flags
+	createmeetingCmd.Flags().StringVarP(&_title, "title", "t", "",
+		"Specify the title of the meeting need to be created.")
+	createmeetingCmd.Flags().StringSliceVarP(&_members, "members", "m",
+		make([]string, 0), "Specify the members to attend the meeting.")
+	createmeetingCmd.Flags().StringVarP(&_starttime, "starttime", "s", "",
+		"Specify the start time of the meeting in format yyyy/mm/dd/hh:mm")
+	createmeetingCmd.Flags().StringVarP(&_endtime, "endtimeStr", "e", "",
+		"Specify the end time of the meeting in format yyyy/mm/dd/hh:mm")
+}
+
+// createmeetingCmd represents the createmeeting command
+var createmeetingCmd = &cobra.Command{
+	Use:   "createmeeting",
+	Short: "Create a meeting whose host is the current user.",
+	Long: `Create a meeting with title, members, start time and end time.
+	The members must be users that have registerred, and if any members, including
+	you, is busy during the time, the meeting cannot be created.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		curUser, _ := getCurUser()
+		if curUser == "" {
+			fmt.Println(argsError{permissionDeny: true}.Error())
+			_errorLog.Println(argsError{permissionDeny: true}.Error())
+			return
+		}
+		if cmd.Flags().NFlag() == 0 && len(args) == 0 {
+			cmd.Help()
+			return
+		}
+		if err := meetingArgsCheck(cmd); err != nil {
+			fmt.Println(err)
+			_errorLog.Println(err)
+			return
+		}
+		memberList := make([]entity.SimpleUser, len(_members))
+		for i := range memberList {
+			memberList[i].Username = _members[i]
+		}
+		entity.AddOneMeeting(
+			entity.Meeting{Title: _title, Members: memberList, Host: curUser,
+				Starttime: _starttime, Endtime: _endtime})
+		fmt.Printf("[SUCCESS]Meeting \"%v\" created\n", _title)
+		_infoLog.Printf("["+curUser+"] Meeting \"%v\" created\n", _title)
+	},
+}
+
+func meetingArgsCheck(cmd *cobra.Command) error {
+	users := entity.GetUsers()
+	meetings := entity.GetMeetings()
+
+	// Check for the number of arguments
+	if cmd.Flags().NFlag() != 4 {
+		return argsError{invalidNArgs: true}
+	}
+
+	// Check for duplicated title
+	for _, meeting := range meetings {
+		if meeting.Title == _title {
+			return argsError{duplicatedTitle: _title}
+		}
+	}
+
+	// Check for members that haven't registerred yet.
+	for _, member := range _members {
+		exist := false
+		for _, user := range users {
+			if user.Username == member {
+				exist = true
+				break
+			}
+		}
+		if !exist {
+			return argsError{unknownUser: member}
+		}
+	}
+
+	// Check for time
+	if timeErr := timeIntervalCheck(); timeErr != nil {
+		return timeErr
+	}
+
+	// Check for busy members
+	var busyMembers []string
+	st, _ := time.Parse(TIME_FORM, _starttime)
+	et, _ := time.Parse(TIME_FORM, _endtime)
+	someoneBusy := false
+	for _, user := range users {
+		for _, meeting := range meetings {
+			if meeting.HasUser(user.Username) {
+				mSt, _ := time.Parse(TIME_FORM, meeting.Starttime)
+				mEt, _ := time.Parse(TIME_FORM, meeting.Endtime)
+				if !(mEt.Before(st) || mSt.After(et)) {
+					busyMembers = append(busyMembers, user.Username)
+					someoneBusy = true
+					break
+				}
+			}
+		}
+	}
+	if someoneBusy {
+		return argsError{busyMembers: busyMembers}
+	}
+
+	return nil
+}
